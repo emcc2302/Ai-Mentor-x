@@ -6,6 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import { getAIVideo } from "../service/aiService";
 import VideoPlayer from "../components/video/VideoPlayer";
 import AITranscript from "../components/video/AITranscript";
+import API_BASE_URL from "../lib/api";
 
 import {
   ChevronLeft,
@@ -379,29 +380,30 @@ export default function Learning() {
 
           const data = await getAIVideo(payload);
 
-          if (data?.videoUrl) {
+          if (data?.jobId) {
             let isReady = data.cached || false;
             let attempts = 0;
 
             if (!isReady) {
               console.log("⏳ Video not cached. Polling for status...");
-              while (!isReady && attempts < 60) {
+              while (!isReady && attempts < 180) {
                 const statusRes = await fetch(`/api/ai/status/${data.jobId}`, {
                   headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
                 });
                 const statusData = await statusRes.json();
-                if (statusData.status === "ready") {
-                  isReady = true;
-                  // ☁️ Prefer Cloudinary URL over local proxy URL
+                  if (statusData.status === "ready") {
+                   isReady = true;
+
                   if (statusData.cloudinary_url) {
-                    console.log("☁️ Using Cloudinary URL:", statusData.cloudinary_url);
-                    data.videoUrl = statusData.cloudinary_url;
-                  }
-                  break;
-                }
-                if (statusData.status === "failed") throw new Error("Video generation failed on server.");
+                     console.log("🎥 Using Cloudinary URL:", statusData.cloudinary_url);
+                       data.videoUrl = statusData.cloudinary_url;
+                        }
+
+                      break;
+                       }
+                    if (statusData.status === "failed") throw new Error("Video generation failed on server.");
                 attempts++;
-                await new Promise(r => setTimeout(r, 1000));
+                await new Promise(r => setTimeout(r, 2000));
               }
             } else {
               console.log("⚡ Video served from cache. Skipping polling.");
@@ -491,7 +493,9 @@ export default function Learning() {
           // If video is almost finished, don't jump to end, start over
           const isAlmostFinished = jumpToTimeRef.current >= video.duration - 5;
           if (!isAlmostFinished) {
+            video.addEventListener('loadedmetadata', () => {
             video.currentTime = jumpToTimeRef.current;
+            }, { once: true });
             setCurrentTime(jumpToTimeRef.current);
           }
           jumpToTimeRef.current = null;
@@ -571,7 +575,7 @@ export default function Learning() {
   const saveLessonData = async (lessonId, data) => {
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch("/api/users/course-progress", {
+      const res = await fetch(`${API_BASE_URL}/api/users/course-progress`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -617,7 +621,7 @@ export default function Learning() {
 
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch("/api/users/course-progress", {
+      const res = await fetch(`${API_BASE_URL}/api/users/course-progress`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -767,7 +771,7 @@ export default function Learning() {
                progressPercent: safeProgress,
                lastWatched: new Date().toISOString(),
                title: learningData.currentLesson.title || "Lesson Video",
-               thumbnail: "https://images.unsplash.com/photo-1611162617474-5b21e879e113?q=80&w=1000&auto=format&fit=crop",
+               thumbnail: learningData?.currentLesson?.thumbnail || learningData?.course?.image || "https://images.unsplash.com/photo-1611162617474-5b21e879e113?q=80&w=1000&auto=format&fit=crop",
                formattedDuration: formatDurationString(vidDuration),
                status: safeProgress >= 95 ? "completed" : "in-progress"
              }

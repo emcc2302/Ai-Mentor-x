@@ -24,7 +24,7 @@ export const courseProgressSchema = z.object({
   courseId: z.union([z.string(), z.number()]).transform((val) => Number(val)),
   lessonData: z.object({
     lessonId: z.string().min(1, "Lesson ID is required"),
-    data: z.record(z.any()),
+    data: z.record(z.string(), z.any()).optional(),
   }).optional(),
   currentLesson: z.string().optional(),
   completedLesson: z.object({

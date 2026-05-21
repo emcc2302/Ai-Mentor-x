@@ -12,9 +12,9 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
+from groq import Groq
 from config import (
-    GEMINI_API_KEY,
+    GROQ_API_KEY,
     CLOUDINARY_CLOUD_NAME,
     CLOUDINARY_API_KEY,
     CLOUDINARY_API_SECRET,
@@ -44,9 +44,11 @@ app.add_middleware(
 )
 
 # --------------------------
-# Gemini Client
+# GROQ Client
 # --------------------------
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = Groq(
+    api_key=GROQ_API_KEY
+)
 
 # --------------------------
 # Request Model
@@ -196,14 +198,18 @@ def process_lesson(data: LessonRequest, base_filename: str):
         print(data.preferences if data.preferences else "No preferences provided")
 
         try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=300,
             )
-            script = response.text.strip().replace("\n", " ")
+            script = response.choices[0].message.content.strip().replace("\n", " ")
             print(f"📝 Generated text: {script}")
         except Exception as e:
-            print(f"❌ Gemini Error: {e}")
+            print(f"❌ Groq Error: {e}")
             return
 
         # 2️⃣ Create Output Folders

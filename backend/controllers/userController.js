@@ -308,7 +308,6 @@ const getWatchedVideos = async (req, res) => {
     if (!user) return res.status(404).json({ message: "User not found" });
 
     const courses = user.purchasedCourses || [];
-    console.log("getWatchedVideos - courses loaded:", JSON.stringify(courses, null, 2));
 
     let videoData = [];
     let totalSeconds = 0;
@@ -362,7 +361,9 @@ const getWatchedVideos = async (req, res) => {
     const metrics = {
       totalHours: (totalSeconds / 3600).toFixed(1),
       videosCompleted: completedCount,
-      avgSession: "15min",
+      avgSession: videoData.length > 0
+      ? `${Math.round((totalSeconds / 60) / videoData.length)}min`
+      : "0min",
       learningStreak: "3 days",
     };
 

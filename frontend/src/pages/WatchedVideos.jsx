@@ -30,6 +30,7 @@ const WatchedVideos = () => {
   });
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchWatchedVideos = async () => {
@@ -55,6 +56,7 @@ const WatchedVideos = () => {
         }
       } catch (error) {
         console.error("Error fetching watched videos:", error);
+        setError("Failed to load watched videos. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -73,7 +75,7 @@ const WatchedVideos = () => {
       </main>
     );
   }
-
+  if (error) return <p className="text-red-500 text-center p-8">{error}</p>;
   // Format last watched date
   const formatLastWatched = (dateString) => {
     const date = new Date(dateString);
