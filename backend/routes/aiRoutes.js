@@ -1,0 +1,234 @@
+import AIVideo from "../models/AIVideo.js";
+import express from "express";
+import { protect } from "../middleware/authMiddleware.js";
+import validate from "../middleware/validate.js";
+import { generateVideoSchema } from "../schemas/aiSchema.js";
+import { getCourseAndLessonTitles } from "../controllers/courseController.js";
+import Preferences from "../models/Preference.js";
+import { videoQueue } from "../queues/videoQueue.js";
+import dotenv from "dotenv";
+dotenv.config();
+
+const router = express.Router();
+
+router.post("/generate-video", protect, validate(generateVideoSchema), async (req, res) => {
+  try {
+    const { courseId, lessonId, celebrity } = req.body;
+
+    // 🔐 Check purchase
+    const purchasedCourse = req.user.purchasedCourses.find(
+      (c) => Number(c.courseId) === Number(courseId)
+    );
+
+    if (!purchasedCourse) {
+      return res.status(403).json({ message: "Course not purchased" });
+    }
+
+    // 🕵️ Check Cache First
+    const cachedVideo = await AIVideo.findOne({
+      where: {
+        courseId: Number(courseId),
+        lessonId: String(lessonId),
+        celebrity: String(celebrity).toLowerCase(),
+      },
+    });
+
+    if (cachedVideo) {
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(cachedVideo.videoUrl);
+      } catch {
+        parsedUrl = null;
+      }
+      if (
+        parsedUrl &&
+        parsedUrl.protocol === "https:" &&
+        parsedUrl.hostname.endsWith("res.cloudinary.com")
+      ) {
+        return res.json({
+          videoUrl: cachedVideo.videoUrl,
+          transcriptName: cachedVideo.transcriptName,
+          jobId: cachedVideo.jobId,
+          cached: true,
+        });
+      }
+
+      const filename = cachedVideo.videoUrl.split("/").pop();
+
+      const videoCheck = await fetch(
+        `${process.env.AI_SERVICE_URL}/video-stream/${filename}`,
+        { method: "HEAD" }   // lightweight check
+      );
+
+      if (!videoCheck.ok) {
+        console.log("⚠️ Cached video missing. Removing from DB...");
+
+        await cachedVideo.destroy();  // delete bad cache
+
+      } else {
+        console.log("✅ Cached video verified.");
+
+        return res.json({
+          videoUrl: cachedVideo.videoUrl,
+          transcriptName: cachedVideo.transcriptName,
+          jobId: cachedVideo.jobId,
+          cached: true,
+        });
+      }
+    }
+
+
+    // Get titles from JSON
+    const titles = await getCourseAndLessonTitles(courseId, lessonId);
+
+    if (!titles) {
+      return res.status(404).json({ message: "Invalid course or lesson" });
+    }
+
+    const { courseTitle, lessonTitle } = titles;
+
+    const userPreferencesRecord = await Preferences.findOne({
+      where: { user_id: req.user.id }   // 👈 FIX
+    });
+
+    const userPreferences = userPreferencesRecord
+      ? userPreferencesRecord.toJSON()
+      : null;
+
+  
+    // Added to queue instead of blocking the request
+    const job = await videoQueue.add("generate-video", {
+      courseId,
+      lessonId,
+      celebrity,
+      courseTitle,
+      lessonTitle,
+      userPreferences,
+    });
+
+    console.log(`📥 Job added to queue: ${job.id}`);
+
+    res.json({
+      jobId: job.id,
+      status: "processing",
+      message: "Video generation started",
+    });
+
+  } catch (error) {
+    console.error("AI GENERATE ERROR:", error);
+    res.status(500).json({ message: "Failed to generate AI video" });
+  }
+});
+
+// ----------------------------------------------------
+// Proxy Transcript Content from Python
+// ----------------------------------------------------
+router.get("/transcript/:filename", async (req, res) => {
+  try {
+    const { filename } = req.params;
+
+    // 🕵️ Check Cache First
+    const cachedVideo = await AIVideo.findOne({
+      where: { transcriptName: filename },
+    });
+
+    if (cachedVideo && cachedVideo.transcript) {
+      console.log("🎯 Serving cached transcript for:", filename);
+      return res.json({ content: cachedVideo.transcript });
+    }
+
+    const pythonTranscriptUrl = `${process.env.AI_SERVICE_URL}/transcript/${filename}`;
+    const response = await fetch(pythonTranscriptUrl);
+
+    if (!response.ok) {
+      return res.status(404).json({ error: "Transcript not found" });
+    }
+
+    const data = await response.json();
+
+    // 💾 Save to Cache if we found the record
+    if (cachedVideo) {
+      cachedVideo.transcript = data.content;
+      await cachedVideo.save();
+      console.log("💾 Transcript cached for:", filename);
+    }
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("❌ Transcript Proxy Error:", error.message);
+    res.status(500).json({ error: "Failed to load transcript" });
+  }
+});
+
+router.get("/status/:jobId", protect, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const response = await fetch(`${process.env.AI_SERVICE_URL}/status/${jobId}`);
+
+    if (!response.ok) {
+      return res.status(404).json({ status: "not_found" });
+    }
+
+    const data = await response.json();
+
+    // 🌥️ If video is ready and Cloudinary URL is available, persist it to DB
+    if (data.status === "ready" && data.cloudinary_url) {
+      try {
+        const updated = await AIVideo.update(
+          { videoUrl: data.cloudinary_url },
+          { where: { jobId: String(jobId) } }
+        );
+        if (updated[0] > 0) {
+          console.log(`☁️ AIVideo DB updated with Cloudinary URL for jobId: ${jobId}`);
+        }
+      } catch (dbErr) {
+        console.error("⚠️ Failed to update AIVideo with Cloudinary URL:", dbErr.message);
+      }
+    }
+
+    res.json(data);
+  } catch (error) {
+    console.error("❌ Status Proxy Error:", error.message);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+// ----------------------------------------------------
+// 3. Proxy Video Stream from Python (The "Middleman")
+// ----------------------------------------------------
+router.get("/video/:courseId/:filename", async (req, res) => {
+  try {
+    const { filename } = req.params;
+
+    const pythonVideoUrl =
+      `${process.env.AI_SERVICE_URL}/video-stream/${filename}`;
+
+    const response = await fetch(pythonVideoUrl);
+
+    if (!response.ok) {
+      return res.status(404).json({
+        error: "Video not found in AI service",
+      });
+    }
+
+    res.setHeader("Content-Type", "video/mp4");
+    // Streams the response body directly to the client
+    const reader = response.body.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+    res.end();
+
+  } catch (error) {
+    console.error("❌ Proxy Error:", error.message);
+    res.status(500).json({
+      error: "Failed to load video via proxy",
+    });
+  }
+});
+
+export default router;
